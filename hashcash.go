@@ -1,109 +1,130 @@
-// Package hashcash provides an implementation of Hashcash version 1 algorithm.
 package hashcash
 
 import (
-	"crypto/rand"
-	"crypto/sha1"
-	"encoding/base64"
-	"encoding/binary"
-	"fmt"
-	"hash"
-	"math"
-	"strconv"
-	"strings"
-	"time"
+    "crypto/rand"
+    "crypto/sha1"
+    "encoding/base64"
+    "fmt"
+    "hash"
+    "math"
+    "strconv"
+    "strings"
+    "time"
 )
 
 // Hash provides an implementation of hashcash v1.
 type Hash struct {
-	hasher  hash.Hash // SHA-1
-	bits    uint      // Number of zero bits
-	zeros   uint      // Number of zero digits
-	saltLen uint      // Random salt length
-	extra   string    // Extension to add to the minted stamp
+    hasher  hash.Hash // SHA-1
+    bits    uint      // Number of zero bits
+    zeros   uint      // Number of zero digits
+    saltLen uint      // Random salt length
+    extra   string    // Extension to add to the minted stamp
 }
 
 // New creates a new Hash with specified options.
 func New(bits uint, saltLen uint, extra string) *Hash {
-	h := &Hash{
-		hasher:  sha1.New(),
-		bits:    bits,
-		saltLen: saltLen,
-		extra:   extra}
-	h.zeros = uint(math.Ceil(float64(h.bits) / 4.0))
-	return h
+    h := &Hash{
+        hasher:  sha1.New(),
+        bits:    bits,
+        saltLen: saltLen,
+        extra:   extra}
+    h.zeros = uint(math.Ceil(float64(h.bits) / 4.0))
+    return h
 }
-
-// NewStd creates a new Hash with 20 bits of collision and 8 bytes of salt chars.
-func NewStd() *Hash {
-	return New(20, 8, "")
-}
-
-// Date field format
-const dateFormat = "060102"
 
 // Mint a new hashcash stamp for resource.
 func (h *Hash) Mint(resource string) (string, error) {
-	salt, err := h.getSalt()
-	if err != nil {
-		return "", err
-	}
-	date := time.Now().Format(dateFormat)
-	counter := 0
-	var stamp string
-	for {
-		stamp = fmt.Sprintf("1:%d:%s:%s:%s:%s:%x",
-			h.bits, date, resource, h.extra, salt, counter)
-		if h.checkZeros(stamp) {
-			return stamp, nil
-		}
-		counter++
-	}
+    salt, err := h.getSalt()
+    if err != nil {
+        return "", err
+    }
+    date := time.Now().Format(dateFormat)
+    counter := 0
+    var stamp string
+    for {
+        stamp = fmt.Sprintf("1:%d:%s:%s:%s:%s:%x",
+            h.bits, date, resource, h.extra, salt, counter)
+        if h.checkZeros(stamp) {
+            return stamp, nil
+        }
+        counter++
+    }
 }
 
 // Check whether a hashcash stamp is valid.
 func (h *Hash) Check(stamp string) bool {
-	if h.checkDate(stamp) {
-		return h.checkZeros(stamp)
-	}
-	return false
-}
+    // Split the stamp into its components
+    fields := strings.Split(stamp, ":")
+    if len(fields) != 7 {
+        return false
+    }
 
-// CheckNoDate checks whether a hashcash stamp is valid ignoring date.
-func (h *Hash) CheckNoDate(stamp string) bool {
-	return h.checkZeros(stamp)
+    // Parse the bits field from the stamp
+    stampBits, err := strconv.ParseUint(fields[1], 10, 32)
+    if err != nil || uint(stampBits) < h.bits {
+        // If parsing fails or the stamp's bits are lower than required, it's invalid
+        return false
+    }
+
+    // Check the date
+    if !h.checkDate(stamp) {
+        return false
+    }
+
+    // Check the leading zero bits
+    return h.checkZeros(stamp)
 }
 
 func (h *Hash) getSalt() (string, error) {
-	buf := make([]byte, h.saltLen)
-	_, err := rand.Read(buf)
-	if err != nil {
-		return "", err
-	}
-	salt := base64.StdEncoding.EncodeToString(buf)
-	return salt[:h.saltLen], nil
+    buf := make([]byte, h.saltLen)
+    _, err := rand.Read(buf)
+    if err != nil {
+        return "", err
+    }
+    salt := base64.StdEncoding.EncodeToString(buf)
+    return salt[:h.saltLen], nil
 }
 
+// checkZeros counts the leading zero bits in the hash of the stamp.
 func (h *Hash) checkZeros(stamp string) bool {
-	h.hasher.Reset()
-	h.hasher.Write([]byte(stamp))
-	sum := h.hasher.Sum(nil)
-	sumUint64 := binary.BigEndian.Uint64(sum)
-	sumBits := strconv.FormatUint(sumUint64, 2)
-	zeroes := 64 - len(sumBits)
+    h.hasher.Reset()
+    h.hasher.Write([]byte(stamp))
+    sum := h.hasher.Sum(nil)
 
-	return uint(zeroes) >= h.bits
+    // Count the number of leading zero bits
+    var zeroBits uint
+    for _, b := range sum {
+        if b == 0 {
+            zeroBits += 8
+        } else {
+            // Count leading zeros in the current byte
+            for mask := byte(0x80); mask > 0; mask >>= 1 {
+                if b&mask == 0 {
+                    zeroBits++
+                } else {
+                    break
+                }
+            }
+            break
+        }
+    }
+
+    // Ensure the number of leading zero bits matches the required bits
+    return zeroBits >= h.bits
 }
 
+// checkDate validates the date field of the stamp.
 func (h *Hash) checkDate(stamp string) bool {
-	fields := strings.Split(stamp, ":")
-	if len(fields) != 7 {
-		return false
-	}
-	then, err := time.Parse(dateFormat, fields[2])
-	if err != nil {
-		return false
-	}
-	duration := time.Since(then)
-	return duration.Hours()*2 <= 48
+    fields := strings.Split(stamp, ":")
+    if len(fields) != 7 {
+        return false
+    }
+    then, err := time.Parse(dateFormat, fields[2])
+    if err != nil {
+        return false
+    }
+    duration := time.Since(then)
+    return duration.Hours()*2 <= 48
 }
+
+const dateFormat = "060102"
